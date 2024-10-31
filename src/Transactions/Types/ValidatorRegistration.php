@@ -4,22 +4,24 @@ declare(strict_types=1);
 
 namespace ArkEcosystem\Crypto\Transactions\Types;
 
-use ArkEcosystem\Crypto\ByteBuffer\ByteBuffer;
+use ArkEcosystem\Crypto\Enums\AbiFunction;
+use ArkEcosystem\Crypto\Utils\AbiEncoder;
 
-class ValidatorRegistration extends Transaction
+class ValidatorRegistration extends AbstractTransaction
 {
-    public function serializeData(array $options = []): ByteBuffer
+    public function __construct(?array $data = [])
     {
-        $buffer = ByteBuffer::new(1);
-        $buffer->writeHex($this->data['asset']['validatorPublicKey']);
+        $payload = $this->decodePayload($data);
 
-        return $buffer;
+        if ($payload !== null) {
+            $data['asset']['validatorPublicKey'] = $payload['args'][0];
+        }
+
+        parent::__construct($data);
     }
 
-    public function deserializeData(ByteBuffer $buffer): void
+    public function getPayload(): string
     {
-        $this->data['asset'] = [
-            'validatorPublicKey' => $buffer->readHex(48 * 2),
-        ];
+        return (new AbiEncoder())->encodeFunctionCall(AbiFunction::VALIDATOR_REGISTRATION->value, [$this->data['asset']['validatorPublicKey']]);
     }
 }

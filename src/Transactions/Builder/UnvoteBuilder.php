@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace ArkEcosystem\Crypto\Transactions\Builder;
 
 use ArkEcosystem\Crypto\Transactions\Types\AbstractTransaction;
-use ArkEcosystem\Crypto\Transactions\Types\ValidatorResignation;
+use ArkEcosystem\Crypto\Transactions\Types\Unvote;
 
-class ValidatorResignationBuilder extends AbstractTransactionBuilder
+class UnvoteBuilder extends AbstractTransactionBuilder
 {
     protected function getTransactionInstance(?array $data = []): AbstractTransaction
     {
-        return new ValidatorResignation($data);
+        return new Unvote($data);
     }
 }

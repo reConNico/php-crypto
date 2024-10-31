@@ -6,7 +6,7 @@ namespace ArkEcosystem\Tests\Crypto\Unit\Transactions\Serializers;
 
 use ArkEcosystem\Crypto\Identities\PrivateKey;
 use ArkEcosystem\Crypto\Transactions\Deserializer;
-use ArkEcosystem\Crypto\Transactions\Types\Transfer;
+use ArkEcosystem\Crypto\Transactions\Types\AbstractTransaction;
 use ArkEcosystem\Tests\Crypto\TestCase;
 use BitWasp\Buffertools\Buffer;
 
@@ -68,9 +68,9 @@ class TransactionTest extends TestCase
         $this->assertIsString($actual);
     }
 
-    private function getTransaction($file = 'transfer-sign'): Transfer
+    private function getTransaction($file = 'transfer'): AbstractTransaction
     {
-        $fixture = $this->getTransactionFixture('transfer', $file);
+        $fixture = $this->getTransactionFixture('evm_call', $file);
 
         return Deserializer::new($fixture['serialized'])->deserialize();
     }

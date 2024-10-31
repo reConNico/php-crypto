@@ -7,18 +7,18 @@ namespace ArkEcosystem\Crypto\Transactions;
 use ArkEcosystem\Crypto\ByteBuffer\ByteBuffer;
 use ArkEcosystem\Crypto\Configuration\Network;
 use ArkEcosystem\Crypto\Enums\TypeGroup;
-use ArkEcosystem\Crypto\Enums\Types;
-use ArkEcosystem\Crypto\Transactions\Types\Transaction;
+use ArkEcosystem\Crypto\Transactions\Types\AbstractTransaction;
+use ArkEcosystem\Crypto\Utils\Address;
 use BitWasp\Buffertools\Buffer;
 
 class Serializer
 {
-    public Transaction $transaction;
+    public AbstractTransaction $transaction;
 
     /**
      * Create a new serializer instance.
      *
-     * @param Transaction $transaction
+     * @param AbstractTransaction $transaction
      */
     private function __construct($transaction)
     {
@@ -28,14 +28,14 @@ class Serializer
     /**
      * Create a new deserializer instance.
      *
-     * @param Transaction $transaction
+     * @param AbstractTransaction $transaction
      */
     public static function new($transaction)
     {
         return new static($transaction);
     }
 
-    public static function getBytes(Transaction $transaction, array $options = []): Buffer
+    public static function getBytes(AbstractTransaction $transaction, array $options = []): Buffer
     {
         return $transaction->serialize($options);
     }
@@ -51,10 +51,11 @@ class Serializer
 
         $this->serializeCommon($buffer);
 
-        $this->serializeVendorField($buffer);
+        // Vendor field length from previous transaction serialization
+        // Added for compatibility
+        $buffer->writeUInt8(0);
 
-        $typeBuffer = $this->transaction->serializeData($options);
-        $buffer->append($typeBuffer);
+        $this->serializeData($buffer, $options);
 
         $this->serializeSignatures($buffer, $options);
 
@@ -89,50 +90,49 @@ class Serializer
         }
     }
 
-    private function serializeCommon(ByteBuffer $buffer): void
+    private function serializeData(ByteBuffer $buffer, array $options = []): void
     {
-        $this->transaction->data['version'] = $this->transaction->data['version'] ?? 0x01;
-        if (! isset($this->transaction->data['typeGroup'])) {
-            $this->transaction->data['typeGroup'] = TypeGroup::CORE;
+        // Write amount (uint256)
+        $buffer->writeUint256($this->transaction->data['amount']);
+
+        // Write recipient marker and recipientId (if present)
+        if (isset($this->transaction->data['recipientId'])) {
+            $buffer->writeUInt8(1); // Recipient marker
+            $buffer->writeHex(
+                Address::toBufferHexString($this->transaction->data['recipientId'])
+            );
+        } else {
+            $buffer->writeUInt8(0); // No recipient
         }
 
+        // Write gasLimit (uint32)
+        $buffer->writeUInt32($this->transaction->data['asset']['evmCall']['gasLimit']);
+
+        // Write payload length (uint32) and payload
+        $payloadHex    = ltrim($this->transaction->getPayload(), '0x');
+
+        $payloadLength = strlen($payloadHex);
+
+        $buffer->writeUInt32($payloadLength / 2);
+
+        // Write payload as hex
+        $buffer->writeHex($payloadHex);
+    }
+
+    private function serializeCommon(ByteBuffer $buffer): void
+    {
         $buffer->writeUInt8(0xff);
-        $buffer->writeUInt8($this->transaction->data['version']);
+        $buffer->writeUInt8($this->transaction->data['version'] ?? 0x01);
         $buffer->writeUInt8($this->transaction->data['network'] ?? Network::version());
 
-        $buffer->writeUint32($this->transaction->data['typeGroup']);
+        $buffer->writeUint32($this->transaction->data['typeGroup'] ?? TypeGroup::CORE);
         $buffer->writeUint16($this->transaction->data['type']);
         $buffer->writeUint64(+$this->transaction->data['nonce']);
 
-        if (isset($this->transaction->data['senderPublicKey'])) {
+        if ($this->transaction->data['senderPublicKey']) {
             $buffer->writeHex($this->transaction->data['senderPublicKey']);
         }
 
-        if (intval($this->transaction->data['type']) === Types::EVM_CALL->value) {
-            $buffer->writeUint256($this->transaction->data['fee']);
-        } else {
-            $buffer->writeUint64(+$this->transaction->data['fee']);
-        }
-    }
-
-    private function serializeVendorField(ByteBuffer $buffer): void
-    {
-        if ($this->transaction->hasVendorField()) {
-            $data = $this->transaction->data;
-
-            if (isset($data['vendorField'])) {
-                $vendorFieldLength = strlen($data['vendorField']);
-                $buffer->writeUInt8($vendorFieldLength);
-                $buffer->writeString($data['vendorField']);
-            } elseif (isset($data['vendorFieldHex'])) {
-                $vendorFieldHexLength = strlen($data['vendorFieldHex']);
-                $buffer->writeUInt8($vendorFieldHexLength / 2);
-                $buffer->writeHex($data['vendorFieldHex']);
-            } else {
-                $buffer->writeUInt8(0x00);
-            }
-        } else {
-            $buffer->writeUInt8(0x00);
-        }
+        $buffer->writeUint256($this->transaction->data['fee']);
     }
 }

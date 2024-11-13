@@ -18,29 +18,12 @@ class EvmCallBuilderTest extends TestCase
         $fixture = $this->getTransactionFixture('evm_call', 'evm-sign');
 
         $builder = EvmCallBuilder::new()
-          ->fee($fixture['data']['fee'])
+          ->gasPrice($fixture['data']['gasPrice'])
           ->nonce($fixture['data']['nonce'])
-          ->network(30)
-          ->payload($fixture['data']['asset']['evmCall']['payload'])
-          ->gasLimit($fixture['data']['asset']['evmCall']['gasLimit'])
-          ->sign($this->passphrase);
-
-        $this->assertTrue($builder->verify());
-    }
-
-    /** @test */
-    public function it_should_sign_it_with_a_passphrase_and_contract()
-    {
-        $fixture = $this->getTransactionFixture('evm_call', 'evm-with-contract');
-
-        $builder = EvmCallBuilder::new()
-          ->fee($fixture['data']['fee'])
-          ->nonce($fixture['data']['nonce'])
-          ->network(30)
-          ->payload($fixture['data']['asset']['evmCall']['payload'])
-          ->gasLimit($fixture['data']['asset']['evmCall']['gasLimit'])
-          // RecipientId is the contractId
-          ->recipient($fixture['data']['recipientId'])
+          ->network($fixture['data']['network'])
+          ->payload($fixture['data']['data'])
+          ->gasLimit($fixture['data']['gasLimit'])
+          ->recipientAddress('0xE536720791A7DaDBeBdBCD8c8546fb0791a11901')
           ->sign($this->passphrase);
 
         $this->assertTrue($builder->verify());

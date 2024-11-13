@@ -15,10 +15,13 @@ use ArkEcosystem\Crypto\Transactions\Types\ValidatorResignation;
 use ArkEcosystem\Crypto\Transactions\Types\Vote;
 use ArkEcosystem\Crypto\Utils\AbiDecoder;
 use ArkEcosystem\Crypto\Utils\Address;
-use BitWasp\Bitcoin\Crypto\Hash;
 
 class Deserializer
 {
+    public const SIGNATURE_SIZE = 64;
+
+    public const RECOVERY_SIZE  = 1;
+
     private ByteBuffer $buffer;
 
     /**
@@ -48,23 +51,22 @@ class Deserializer
 
         $this->deserializeCommon($data);
 
-        // Vendor field length from previous transaction serialization
-        $this->buffer->skip(1);
-
         $this->deserializeData($data);
 
         $transaction = $this->guessTransactionFromData($data);
 
         $this->deserializeSignatures($transaction->data);
 
-        $transaction->data['id'] = Hash::sha256($transaction->serialize())->getHex();
+        $transaction->recoverSender();
+
+        $transaction->data['id'] = $transaction->hash(skipSignature: false)->getHex();
 
         return $transaction;
     }
 
     private function guessTransactionFromData(array $data): AbstractTransaction
     {
-        if ($data['amount'] !== '0') {
+        if ($data['value'] !== '0') {
             return new Transfer($data);
         }
 
@@ -97,7 +99,7 @@ class Deserializer
 
     private function decodePayload(array $data): ?array
     {
-        $payload = $data['asset']['evmCall']['payload'];
+        $payload = $data['data'];
 
         if ($payload === '') {
             return null;
@@ -108,17 +110,15 @@ class Deserializer
 
     private function deserializeData(array &$data): void
     {
-        // Read amount (uint64)
-        $data['amount'] = $this->buffer->readUInt256();
+        // Read value (uint64)
+        $data['value'] = $this->buffer->readUInt256();
 
         // Read recipient marker and recipientId
         $recipientMarker = $this->buffer->readUInt8();
-        if ($recipientMarker === 1) {
-            $data['recipientId'] = Address::fromByteBuffer($this->buffer);
-        }
 
-        // Read gasLimit (uint32)
-        $gasLimit = $this->buffer->readUInt32();
+        if ($recipientMarker === 1) {
+            $data['recipientAddress'] = Address::fromByteBuffer($this->buffer);
+        }
 
         // Read payload length (uint32)
         $payloadLength = $this->buffer->readUInt32();
@@ -126,66 +126,20 @@ class Deserializer
         // Read payload as hex
         $payloadHex = $this->buffer->readHex($payloadLength * 2);
 
-        $data['asset'] = [
-            'evmCall' => [
-                'gasLimit' => $gasLimit,
-                'payload'  => $payloadHex,
-            ],
-        ];
+        $data['data'] = $payloadHex;
     }
 
     private function deserializeCommon(array &$data): void
     {
-        $this->buffer->skip(1);
-
-        $data['version']              = $this->buffer->readUInt8();
-        $data['network']              = $this->buffer->readUInt8();
-        $data['typeGroup']            = $this->buffer->readUInt32();
-        $data['type']                 = $this->buffer->readUInt16();
-        $data['nonce']                = strval($this->buffer->readUInt64());
-        $data['senderPublicKey']      = $this->buffer->readHex(33 * 2);
-        $data['fee']                  = $this->buffer->readUInt256();
-        $data['amount']               = '0';
+        $data['network']                   = $this->buffer->readUInt8();
+        $data['nonce']                     = strval($this->buffer->readUInt64());
+        $data['gasPrice']                  = $this->buffer->readUint32();
+        $data['gasLimit']                  = $this->buffer->readUint32();
+        $data['value']                     = '0';
     }
 
     private function deserializeSignatures(array &$data): void
     {
-        if ($this->canReadNonMultiSignature($this->buffer)) {
-            $data['signature'] = $this->buffer->readHex(64 * 2);
-        }
-
-        if ($this->canReadNonMultiSignature($this->buffer)) {
-            $data['secondSignature'] = $this->buffer->readHex(64 * 2);
-        }
-
-        if ($this->buffer->remaining()) {
-            if ($this->buffer->remaining() % 65 === 0) {
-                $data['signatures'] = [];
-
-                $count            = $this->buffer->remaining() / 65;
-                $publicKeyIndexes = [];
-                for ($i = 0; $i < $count; $i++) {
-                    $multiSignaturePart = $this->buffer->readHex(65 * 2);
-                    $publicKeyIndex     = intval(substr($multiSignaturePart, 0, 2), 16);
-
-                    if (! isset($publicKeyIndexes[$publicKeyIndex])) {
-                        $publicKeyIndexes[$publicKeyIndex] = true;
-                    } else {
-                        throw new \Exception('Duplicate participant in multisignature');
-                    }
-
-                    $data['signatures'][] = $multiSignaturePart;
-                }
-            } else {
-                throw new \Exception('signature buffer not exhausted');
-            }
-        }
-    }
-
-    private function canReadNonMultiSignature(ByteBuffer $buffer)
-    {
-        return
-            $buffer->remaining()
-            && ($buffer->remaining() % 64 === 0 || $buffer->remaining() % 65 !== 0);
+        $data['signature'] = $this->buffer->readHex((self::SIGNATURE_SIZE + self::RECOVERY_SIZE) * 2);
     }
 }

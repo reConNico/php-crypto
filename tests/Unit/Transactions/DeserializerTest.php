@@ -24,7 +24,7 @@ class DeserializerTest extends TestCase
 
         $transaction = $this->assertTransaction($fixture);
 
-        expect($transaction->data['amount'])->toEqual('100000000');
+        expect($transaction->data['value'])->toEqual('10000000000000000000');
 
         expect($transaction)->toBeInstanceOf(Transfer::class);
     }
@@ -36,7 +36,7 @@ class DeserializerTest extends TestCase
 
         $transaction = $this->assertTransaction($fixture);
 
-        expect($transaction->data['asset']['vote'])->toEqual('0x512F366D524157BcF734546eB29a6d687B762255');
+        expect($transaction->data['vote'])->toEqual('0x512F366D524157BcF734546eB29a6d687B762255');
 
         expect($transaction)->toBeInstanceOf(Vote::class);
     }
@@ -74,10 +74,12 @@ class DeserializerTest extends TestCase
     private function assertTransaction(array $fixture): AbstractTransaction
     {
         $actual = $this->assertDeserialized($fixture, [
+            'id',
             'nonce',
-            'fee',
+            'gasPrice',
             'gasLimit',
             'contractId',
+            'signature',
         ]);
 
         $this->assertTrue($actual->verify());

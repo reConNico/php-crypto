@@ -5,11 +5,19 @@ declare(strict_types=1);
 namespace ArkEcosystem\Crypto\Transactions\Types;
 
 use ArkEcosystem\Crypto\Configuration\Network;
+use ArkEcosystem\Crypto\Identities\Address;
 use ArkEcosystem\Crypto\Transactions\Serializer;
 use ArkEcosystem\Crypto\Utils\AbiDecoder;
+use ArkEcosystem\Crypto\Utils\TransactionHasher;
+use BitWasp\Bitcoin\Bitcoin;
+use BitWasp\Bitcoin\Crypto\EcAdapter\EcAdapterFactory;
 use BitWasp\Bitcoin\Crypto\EcAdapter\Impl\PhpEcc\Key\PrivateKey;
+use BitWasp\Bitcoin\Crypto\EcAdapter\Impl\PhpEcc\Serializer\Signature\CompactSignatureSerializer;
+use BitWasp\Bitcoin\Crypto\EcAdapter\Key\PublicKeyInterface;
+use BitWasp\Bitcoin\Crypto\EcAdapter\Signature\CompactSignatureInterface;
 use BitWasp\Bitcoin\Crypto\Hash;
 use BitWasp\Buffertools\Buffer;
+use BitWasp\Buffertools\BufferInterface;
 
 abstract class AbstractTransaction
 {
@@ -24,11 +32,11 @@ abstract class AbstractTransaction
 
     public function decodePayload(array $data): ?array
     {
-        if (! isset($data['asset']['evmCall']['payload'])) {
+        if (! isset($data['data'])) {
             return null;
         }
 
-        $payload = $data['asset']['evmCall']['payload'];
+        $payload = $data['data'];
 
         if ($payload === '') {
             return null;
@@ -45,9 +53,9 @@ abstract class AbstractTransaction
         return Hash::sha256(Serializer::getBytes($this))->getHex();
     }
 
-    public function getBytes($options = []): Buffer
+    public function getBytes(bool $skipSignature = false): Buffer
     {
-        return Serializer::getBytes($this, $options);
+        return Serializer::getBytes($this, $skipSignature);
     }
 
     /**
@@ -55,89 +63,69 @@ abstract class AbstractTransaction
      */
     public function sign(PrivateKey $keys): static
     {
-        $options = [
-            'skipSignature'       => true,
-            'skipSecondSignature' => true,
-        ];
-        $transaction             = Hash::sha256($this->getBytes($options));
+        $hash = $this->hash(skipSignature: true);
 
-        // $this->data['signature'] = $keys->sign($transaction)->getBuffer()->getHex();
-        $this->data['signature'] = $this->temporarySignerSign($transaction, $keys);
+        $signature = $keys->signCompact($hash);
+
+        // Extract the recovery ID (an integer between 0 and 3) from the signature
+        $recoveryId = $signature->getRecoveryId();
+
+        // Get the full signature buffer, which includes the adjusted recovery ID at the start
+        $signatureHexWithRecoveryId = $signature->getBuffer()->getHex();
+
+        // Apparently, the compact signature returned by signCompact() includes an adjusted recovery ID
+        // as the first byte of the signature buffer. This adjusted recovery ID is specific to the compact
+        // signature format used by the library and is calculated by adding a constant (typically 27 or 31)
+        // to the actual recovery ID. This adjustment is done internally by the library for its own purposes.
+
+        // However, in our context, and to match the expected signature format (as per the JavaScript
+        // implementation), we need the raw signature consisting of only the 'r' and 's' values.
+        // Therefore, we remove the first byte (two hex characters) from the signature buffer to exclude the adjusted recovery ID.
+        $signatureHex = substr($signatureHexWithRecoveryId, 2);
+
+        // Append the unadjusted recovery ID at the end of the signature
+        // The unadjusted recovery ID is appended to match the expected signature format
+        // This aligns with how the JavaScript implementation handles the recovery ID
+        $signatureHex .= str_pad(dechex($recoveryId), 2, '0', STR_PAD_LEFT);
+
+        $this->data['signature'] = $signatureHex;
 
         return $this;
     }
 
-    /**
-     * Sign the transaction using the given second passphrase.
-     */
-    public function secondSign(PrivateKey $keys): static
+    public function getPublicKey(CompactSignatureInterface $compactSignature): PublicKeyInterface
     {
-        $options = [
-            'skipSecondSignature' => true,
-        ];
-        $transaction                   = Hash::sha256($this->getBytes($options));
+        $ecAdapter = EcAdapterFactory::getPhpEcc(
+            Bitcoin::getMath(),
+            Bitcoin::getGenerator()
+        );
 
-        $this->data['secondSignature'] = $this->temporarySignerSign($transaction, $keys);
-
-        return $this;
+        return $ecAdapter->recover($this->hash(skipSignature: true), $compactSignature);
     }
 
-    /**
-     * Sign the transaction using the given passphrase.
-     */
-    public function multiSign(PrivateKey $keys, int $index = -1): static
+    public function recoverSender(): void
     {
-        if (! isset($this->data['signatures'])) {
-            $this->data['signatures'] = [];
-        }
+        $compactSignature = $this->getSignature();
 
-        $index = $index === -1 ? count($this->data['signatures']) : $index;
+        $publicKey = $this->getPublicKey($compactSignature);
 
-        $transactionHash             = Hash::sha256($this->getBytes([
-            'skipSignature'       => true,
-            'skipMultiSignature'  => true,
-        ]));
+        $this->data['senderPublicKey'] = $publicKey->getHex();
 
-        $signature = $this->temporarySignerSign($transactionHash, $keys);
-
-        $indexedSignature = $this->numberToHex($index).$signature;
-
-        $this->data['signatures'][] = $indexedSignature;
-
-        return $this;
+        $this->data['senderAddress'] = Address::fromPublicKey($this->data['senderPublicKey']);
     }
 
     public function verify(): bool
     {
-        $options = [
-            'skipSignature'             => true,
-            'skipSecondSignature'       => true,
-        ];
+        $compactSignature = $this->getSignature();
 
-        $publicKey = $this->data['senderPublicKey'];
-        $signature = $this->data['signature'];
+        $publicKey = $this->getPublicKey($compactSignature);
 
-        $transaction = Hash::sha256($this->getBytes($options));
-
-        return $this->temporarySignerVerify($transaction, $signature, $publicKey);
+        return $publicKey->verify($this->hash(skipSignature: true), $compactSignature);
     }
 
-    public function secondVerify(string $secondPublicKey): bool
+    public function serialize(bool $skipSignature = false): Buffer
     {
-        $options = [
-            'skipSecondSignature' => true,
-        ];
-
-        $signature = $this->data['secondSignature'];
-
-        $transaction = Hash::sha256($this->getBytes($options));
-
-        return $this->temporarySignerVerify($transaction, $signature, $secondPublicKey);
-    }
-
-    public function serialize(array $options = []): Buffer
-    {
-        return Serializer::new($this)->serialize($options);
+        return Serializer::new($this)->serialize($skipSignature);
     }
 
     /**
@@ -146,19 +134,16 @@ abstract class AbstractTransaction
     public function toArray(): array
     {
         return array_filter([
-            'fee'                  => $this->data['fee'],
-            'id'                   => $this->data['id'],
-            'network'              => $this->data['network'] ?? Network::get()->version(),
-            'nonce'                => $this->data['nonce'],
-            'senderPublicKey'      => $this->data['senderPublicKey'],
-            'signature'            => $this->data['signature'],
-            'type'                 => $this->data['type'],
-            'typeGroup'            => $this->data['typeGroup'],
-            'version'              => $this->data['version'] ?? 1,
-            'signatures'           => $this->data['signatures'] ?? null,
-            'recipientId'          => $this->data['recipientId'] ?? null,
-            'amount'               => $this->data['amount'],
-            'asset'                => $this->data['asset'],
+            'gasPrice'                   => $this->data['gasPrice'],
+            'network'                    => $this->data['network'] ?? Network::get()->version(),
+            'id'                         => $this->data['id'],
+            'gasLimit'                   => $this->data['gasLimit'],
+            'nonce'                      => $this->data['nonce'],
+            'senderPublicKey'            => $this->data['senderPublicKey'],
+            'signature'                  => $this->data['signature'],
+            'recipientAddress'           => $this->data['recipientAddress'] ?? null,
+            'value'                      => $this->data['value'],
+            'data'                       => $this->data['data'],
         ], function ($element) {
             if (null !== $element) {
                 return true;
@@ -176,6 +161,38 @@ abstract class AbstractTransaction
         return json_encode($this->toArray());
     }
 
+    public function hash(bool $skipSignature): BufferInterface
+    {
+        $hashData = [
+            'gasPrice'         => $this->data['gasPrice'],
+            'network'          => $this->data['network'] ?? Network::get()->version(),
+            'nonce'            => $this->data['nonce'],
+            'value'            => $this->data['value'],
+            'gasLimit'         => $this->data['gasLimit'],
+            'data'             => $this->data['data'],
+            'recipientAddress' => $this->data['recipientAddress'] ?? null,
+            'signature'        => $this->data['signature'] ?? null,
+        ];
+
+        return TransactionHasher::toHash($hashData, $skipSignature);
+    }
+
+    private function getSignature(): CompactSignatureInterface
+    {
+        $ecAdapter = EcAdapterFactory::getPhpEcc(
+            Bitcoin::getMath(),
+            Bitcoin::getGenerator()
+        );
+
+        $recoverId = intval(substr($this->data['signature'], -2));
+
+        $signature = substr($this->data['signature'], 0, -2);
+
+        $serializer = new CompactSignatureSerializer($ecAdapter);
+
+        return $serializer->parse(Buffer::hex($this->numberToHex($recoverId + 27 + 4).$signature));
+    }
+
     private function numberToHex(int $number, $padding = 2): string
     {
         // Convert the number to hexadecimal
@@ -183,64 +200,5 @@ abstract class AbstractTransaction
 
         // Pad the hexadecimal string with leading zeros
         return str_pad($indexHex, $padding, '0', STR_PAD_LEFT);
-    }
-
-    private function temporarySignerSign(Buffer $transaction, PrivateKey $keys)
-    {
-        $privateKey = $keys->getHex();
-
-        $message    = $transaction->getHex();
-
-        $command = "sign $privateKey $message";
-
-        $result = $this->runTemporaryNodeCommand($command);
-
-        return $result['signature'];
-    }
-
-    private function temporarySignerVerify(Buffer $transaction, string $signature, string $publicKey)
-    {
-        $message = $transaction->getHex();
-
-        $command = "verify $publicKey $message $signature";
-
-        $result = $this->runTemporaryNodeCommand($command);
-
-        return $result['isValid'];
-    }
-
-    private function runTemporaryNodeCommand(string $command): array
-    {
-        $scriptPath = __DIR__.'/../../../scripts';
-
-        $command = escapeshellcmd("npm start --prefix $scriptPath $command");
-
-        exec($command, $output, $returnVar);
-
-        if ($returnVar !== 0) {
-            $errorOutput = implode("\n", $output);
-
-            throw new \RuntimeException("Error running signer script: $errorOutput");
-        }
-
-        $jsonOutput = implode("\n", $output);
-
-        if (preg_match('/\{.*\}/s', $jsonOutput, $matches)) {
-            $json = $matches[0];
-        } else {
-            throw new \RuntimeException("Error: Could not find JSON output in: $jsonOutput");
-        }
-
-        $result = json_decode($json, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new \RuntimeException('Error parsing JSON output: '.json_last_error_msg());
-        }
-
-        if ($result['status'] !== 'success') {
-            throw new \RuntimeException('Error: '.$result['message']);
-        }
-
-        return $result;
     }
 }

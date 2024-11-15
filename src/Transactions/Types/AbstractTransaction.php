@@ -15,7 +15,6 @@ use BitWasp\Bitcoin\Crypto\EcAdapter\Impl\PhpEcc\Key\PrivateKey;
 use BitWasp\Bitcoin\Crypto\EcAdapter\Impl\PhpEcc\Serializer\Signature\CompactSignatureSerializer;
 use BitWasp\Bitcoin\Crypto\EcAdapter\Key\PublicKeyInterface;
 use BitWasp\Bitcoin\Crypto\EcAdapter\Signature\CompactSignatureInterface;
-use BitWasp\Bitcoin\Crypto\Hash;
 use BitWasp\Buffertools\Buffer;
 use BitWasp\Buffertools\BufferInterface;
 
@@ -26,6 +25,8 @@ abstract class AbstractTransaction
     public function __construct(?array $data = null)
     {
         $this->data = $data ?? [];
+
+        $this->refreshPayloadData();
     }
 
     abstract public function getPayload(): string;
@@ -45,12 +46,19 @@ abstract class AbstractTransaction
         return (new AbiDecoder())->decodeFunctionData($payload);
     }
 
+    public function refreshPayloadData(): static
+    {
+        $this->data['data'] = ltrim($this->getPayload(), '0x');
+
+        return $this;
+    }
+
     /**
      * Convert the byte representation to a unique identifier.
      */
     public function getId(): string
     {
-        return Hash::sha256(Serializer::getBytes($this))->getHex();
+        return $this->hash(skipSignature: false)->getHex();
     }
 
     public function getBytes(bool $skipSignature = false): Buffer
